@@ -1,0 +1,173 @@
+name: Update ServiceNow Incident Reusable Workflow
+
+on:
+  workflow_call:
+    inputs:
+      runner_name:
+        description: GitHub runner label that executes this workflow
+        required: true
+        type: string
+      incident_current_workflow_execution:
+        description: ServiceNow incident number returned from the create-incident workflow
+        required: true
+        type: string
+      awx_job_id:
+        description: AWX job id returned from AWX patching workflow
+        required: true
+        type: string
+      awx_job_status:
+        description: AWX job status returned from AWX patching workflow
+        required: true
+        type: string
+      awx_job_stdout_excerpt:
+        description: AWX job stdout excerpt returned from AWX patching workflow
+        required: true
+        type: string
+      job_template_name:
+        description: AWX job template name
+        required: true
+        type: string
+      branch_name:
+        description: Branch name from the master workflow
+        required: true
+        type: string
+    secrets:
+      servicenow_instance:
+        description: ServiceNow instance hostname or URL
+        required: true
+      servicenow_user:
+        description: ServiceNow username
+        required: true
+      servicenow_password:
+        description: ServiceNow password
+        required: true
+    outputs:
+      incident_number:
+        description: Updated incident number
+        value: ${{ jobs.update-incident.outputs.incident_number }}
+      incident_sys_id:
+        description: Updated incident sys_id
+        value: ${{ jobs.update-incident.outputs.incident_sys_id }}
+      return_value:
+        description: Success or Failure returned by the update workflow
+        value: ${{ jobs.update-incident.outputs.return_value }}
+      incident_closed:
+        description: Whether the incident was closed automatically
+        value: ${{ jobs.update-incident.outputs.incident_closed }}
+
+jobs:
+  update-incident:
+    name: Update ServiceNow incident from AWX results
+    runs-on: ${{ inputs.runner_name }}
+    outputs:
+      incident_number: ${{ steps.collect.outputs.incident_number }}
+      incident_sys_id: ${{ steps.collect.outputs.incident_sys_id }}
+      return_value: ${{ steps.collect.outputs.return_value }}
+      incident_closed: ${{ steps.collect.outputs.incident_closed }}
+
+    steps:
+      - name: Checkout reusable workflow repository
+        uses: actions/checkout@v4
+        with:
+          repository: shailunixpro-mern/Github-Action-to-Update-Servicenow-Incident-Reusable-Workflow
+          ref: main
+
+      - name: Validate required inputs and secrets are not empty
+        shell: bash
+        env:
+          RUNNER_NAME: ${{ inputs.runner_name }}
+          INCIDENT_CURRENT_WORKFLOW_EXECUTION: ${{ inputs.incident_current_workflow_execution }}
+          AWX_JOB_ID: ${{ inputs.awx_job_id }}
+          AWX_JOB_STATUS: ${{ inputs.awx_job_status }}
+          AWX_JOB_STDOUT_EXCERPT: ${{ inputs.awx_job_stdout_excerpt }}
+          JOB_TEMPLATE_NAME: ${{ inputs.job_template_name }}
+          BRANCH_NAME: ${{ inputs.branch_name }}
+          SERVICENOW_INSTANCE: ${{ secrets.servicenow_instance }}
+          SERVICENOW_USER: ${{ secrets.servicenow_user }}
+          SERVICENOW_PASSWORD: ${{ secrets.servicenow_password }}
+        run: |
+          set -euo pipefail
+
+          [ -n "${RUNNER_NAME}" ] || { echo "::error::Input 'runner_name' is missing or empty."; exit 1; }
+          [ -n "${INCIDENT_CURRENT_WORKFLOW_EXECUTION}" ] || { echo "::error::Input 'incident_current_workflow_execution' is missing or empty."; exit 1; }
+          [ -n "${AWX_JOB_ID}" ] || { echo "::error::Input 'awx_job_id' is missing or empty."; exit 1; }
+          [ -n "${AWX_JOB_STATUS}" ] || { echo "::error::Input 'awx_job_status' is missing or empty."; exit 1; }
+          [ -n "${AWX_JOB_STDOUT_EXCERPT}" ] || { echo "::error::Input 'awx_job_stdout_excerpt' is missing or empty."; exit 1; }
+          [ -n "${JOB_TEMPLATE_NAME}" ] || { echo "::error::Input 'job_template_name' is missing or empty."; exit 1; }
+          [ -n "${BRANCH_NAME}" ] || { echo "::error::Input 'branch_name' is missing or empty."; exit 1; }
+
+          [ -n "${SERVICENOW_INSTANCE}" ] || { echo "::error::Secret 'servicenow_instance' is missing or empty."; exit 1; }
+          [ -n "${SERVICENOW_USER}" ] || { echo "::error::Secret 'servicenow_user' is missing or empty."; exit 1; }
+          [ -n "${SERVICENOW_PASSWORD}" ] || { echo "::error::Secret 'servicenow_password' is missing or empty."; exit 1; }
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install Python dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Run ServiceNow incident update
+        shell: bash
+        env:
+          OUTPUT_JSON: servicenow_update_result.json
+          RUNNER_NAME: ${{ inputs.runner_name }}
+          INCIDENT_CURRENT_WORKFLOW_EXECUTION: ${{ inputs.incident_current_workflow_execution }}
+          AWX_JOB_ID: ${{ inputs.awx_job_id }}
+          AWX_JOB_STATUS: ${{ inputs.awx_job_status }}
+          AWX_JOB_STDOUT_EXCERPT: ${{ inputs.awx_job_stdout_excerpt }}
+          JOB_TEMPLATE_NAME: ${{ inputs.job_template_name }}
+          BRANCH_NAME: ${{ inputs.branch_name }}
+          SERVICENOW_INSTANCE: ${{ secrets.servicenow_instance }}
+          SERVICENOW_USER: ${{ secrets.servicenow_user }}
+          SERVICENOW_PASSWORD: ${{ secrets.servicenow_password }}
+        run: |
+          set -euo pipefail
+          python scripts/update_servicenow_incident.py
+
+      - name: Collect ServiceNow update outputs
+        id: collect
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if [ ! -f servicenow_update_result.json ]; then
+            echo "::error::Result file servicenow_update_result.json was not created."
+            echo "incident_number=" >> "$GITHUB_OUTPUT"
+            echo "incident_sys_id=" >> "$GITHUB_OUTPUT"
+            echo "return_value=Failure" >> "$GITHUB_OUTPUT"
+            echo "incident_closed=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          python - <<'PY'
+          import json
+          import os
+
+          with open('servicenow_update_result.json', 'r', encoding='utf-8') as file_handle:
+              data = json.load(file_handle)
+
+          with open(os.environ['GITHUB_OUTPUT'], 'a', encoding='utf-8') as output:
+              output.write(f"incident_number={data.get('incident_number', '')}\n")
+              output.write(f"incident_sys_id={data.get('incident_sys_id', '')}\n")
+              output.write(f"return_value={data.get('return_value', 'Failure')}\n")
+              output.write(f"incident_closed={str(data.get('incident_closed', False)).lower()}\n")
+          PY
+
+      - name: Print ServiceNow update summary
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "ServiceNow reusable workflow result:"
+          if [ -f servicenow_update_result.json ]; then
+            cat servicenow_update_result.json
+          else
+            echo "servicenow_update_result.json not found"
+          fi
