@@ -64,12 +64,25 @@ def update_incident(
     url = f"{instance_url}/api/now/table/incident/{incident_sys_id}"
     payload = {
         "short_description": short_description,
-        "work_notes": work_notes[:MAX_WORK_NOTES_CHARS],
+        "description": "This is a Automated job output trigger from AWX",
+        "comments": f"AWX Job Output\n\n{work_notes[:MAX_WORK_NOTES_CHARS]}",
     }
 
+    print("PATCH URL:", url)
+    print("COMMENTS SIZE:", len(payload["comments"]))
+
     response = session.patch(url, json=payload, timeout=60)
+
+    print("PATCH status:", response.status_code)
+    print("PATCH response:", response.text)
+
+    try:
+        print(response.json())
+    except Exception:
+        print(response.text)
+
     response.raise_for_status()
-    return response.json().get("result", {})
+    return response.json()
 
 
 def close_incident(session: requests.Session, instance_url: str, incident_sys_id: str) -> Dict[str, Any]:
